@@ -49,30 +49,66 @@ for file in files:
                     )
                     second = "bar-icon_geo-icon" if first != "" else ""
                     first = "bar-icon_geo-icon" if first == "" else first
+                if "bar-icon_icon-geo" in key:
+                    barIconGeoIcon += len(
+                        answer["provenanceGraph"]["stimulus"]["nodes"].keys()
+                    )
+                    second = "bar-icon_icon-geo" if first != "" else ""
+                    first = "bar-icon_icon-geo" if first == "" else first
+                if "bar-geo_icon-geo" in key:
+                    barGeoGeoIcon += len(
+                        answer["provenanceGraph"]["stimulus"]["nodes"].keys()
+                    )
+                    second = "bar-geo_icon-geo" if first != "" else ""
+                    first = "bar-geo_icon-geo" if first == "" else first
                 if "pie-geo_geo-icon" in key:
                     pieGeoGeoIcon += len(
                         answer["provenanceGraph"]["stimulus"]["nodes"].keys()
                     )
                     second = "pie-geo_geo-icon" if first != "" else ""
                     first = "pie-geo_geo-icon" if first == "" else first
+                if "pie-geo_icon-geo" in key:
+                    pieGeoGeoIcon += len(
+                        answer["provenanceGraph"]["stimulus"]["nodes"].keys()
+                    )
+                    second = "pie-geo_icon-geo" if first != "" else ""
+                    first = "pie-geo_icon-geo" if first == "" else first
                 if "pie-icon_geo-icon" in key:
                     pieIconGeoIcon += len(
                         answer["provenanceGraph"]["stimulus"]["nodes"].keys()
                     )
                     second = "pie-icon_geo-icon" if first != "" else ""
                     first = "pie-icon_geo-icon" if first == "" else first
+                if "pie-icon_icon-geo" in key:
+                    pieIconGeoIcon += len(
+                        answer["provenanceGraph"]["stimulus"]["nodes"].keys()
+                    )
+                    second = "pie-icon_icon-geo" if first != "" else ""
+                    first = "pie-icon_icon-geo" if first == "" else first
                 if "map-geo_geo-icon" in key:
                     mapGeoGeoIcon += len(
                         answer["provenanceGraph"]["stimulus"]["nodes"].keys()
                     )
                     second = "map-geo_geo-icon" if first != "" else ""
                     first = "map-geo_geo-icon" if first == "" else first
+                if "map-geo_icon-geo" in key:
+                    mapGeoGeoIcon += len(
+                        answer["provenanceGraph"]["stimulus"]["nodes"].keys()
+                    )
+                    second = "map-geo_icon-geo" if first != "" else ""
+                    first = "map-geo_icon-geo" if first == "" else first
                 if "map-icon_geo-icon" in key:
                     mapIconGeoIcon += len(
                         answer["provenanceGraph"]["stimulus"]["nodes"].keys()
                     )
                     second = "map-icon_geo-icon" if first != "" else ""
                     first = "map-icon_geo-icon" if first == "" else first
+                if "map-icon_icon-geo" in key:
+                    mapIconGeoIcon += len(
+                        answer["provenanceGraph"]["stimulus"]["nodes"].keys()
+                    )
+                    second = "map-icon_icon-geo" if first != "" else ""
+                    first = "map-icon_icon-geo" if first == "" else first
 
         # store the count in the dictionary
         event_count[participant_id] = {
