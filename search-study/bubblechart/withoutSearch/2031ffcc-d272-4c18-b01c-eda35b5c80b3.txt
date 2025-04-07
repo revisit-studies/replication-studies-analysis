@@ -1,0 +1,1 @@
+ Seems like we have a bubble chart study and when you click on different colors it will give you universities based on media and earnings. It's an interesting concept. A little confusing I could think of better ways to do it but not sure what the purpose is who would want this but it is an interesting concept.
