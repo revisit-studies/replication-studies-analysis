@@ -1,0 +1,347 @@
+---
+title: "reVISit 2.0: Search-in-Vis Analysis"
+output: html_notebook
+---
+
+# Setup
+
+```{r setup}
+# Load libraries
+library(tidyverse)
+library(clipr)
+library(svglite)
+library(boot)
+library(effectsize)
+library(patchwork)
+```
+
+# Search
+
+## Bubble Colleges
+
+```{r}
+# Read data
+bdf <- read.csv("bubble-colleges.csv", header = TRUE)
+
+# formatting for p-values
+format_p <- function(p, digits = 5, sci_threshold = 0.001) {
+  if (is.na(p)) return("NA")
+  if (p < sci_threshold) {
+    format(p, scientific = TRUE, digits = digits)
+  } else {
+    sprintf(paste0("%.", digits, "f"), p)
+  }
+}
+
+# mark participants who searched
+participant_search_usage <- bdf %>%
+  group_by(ProlificId) %>%
+  summarise(UsedSearch = any(trimws(SearchValue) != ""), .groups = "drop")
+
+# join in search usage and clean up
+bdf <- bdf %>%
+  left_join(participant_search_usage, by = "ProlificId") %>%
+  mutate(
+    PartOfSearch = as.logical(PartOfSearch),
+    DurationSec = Duration / 1000,
+    SearchGroup = case_when(
+      Condition == "no search" ~ "no_search",
+      Condition == "search" & UsedSearch == FALSE ~ "search_no_use",
+      Condition == "search" & UsedSearch == TRUE ~ "search_used"
+    ) %>% factor(levels = c("no_search", "search_no_use", "search_used"))
+  )
+
+# count items explored
+participant_items <- bdf %>%
+  distinct(ProlificId, SearchGroup, College) %>%
+  count(ProlificId, SearchGroup, name = "ItemsExplored")
+
+
+# duration analysis
+participant_duration <- bdf %>%
+  group_by(ProlificId, SearchGroup) %>%
+  summarise(TotalDuration = sum(DurationSec), .groups = "drop")
+
+# summary stats for duration
+duration_summary <- participant_duration %>%
+  group_by(SearchGroup) %>%
+  summarise(mean_cl_boot = list(mean_cl_boot(TotalDuration)),
+            .groups = "drop") %>%
+  unnest_wider(mean_cl_boot) %>%
+  rename(mean = y, lower = ymin, upper = ymax)
+
+
+
+# filter to search used
+search_data <- bdf %>%
+  filter(SearchGroup == "search_used")
+
+# duration for items in search or out of search
+participant_item_duration <- search_data %>%
+  group_by(ProlificId, PartOfSearch) %>%
+  summarise(MeanDuration = mean(DurationSec, na.rm = TRUE), .groups = "drop") %>%
+  mutate(ItemType = factor(PartOfSearch, levels = c(TRUE, FALSE),
+                           labels = c("Search Item", "Non-Search Item")))
+
+# summary stats for search visits
+visit_summary <- participant_item_duration %>%
+  group_by(ItemType) %>%
+  summarise(mean_cl_boot = list(mean_cl_boot(MeanDuration)),
+            .groups = "drop") %>%
+  unnest_wider(mean_cl_boot) %>%
+  rename(mean = y, lower = ymin, upper = ymax)
+
+# stats for search visits
+visit_wilcox <- wilcox.test(MeanDuration ~ ItemType, data = participant_item_duration)
+visit_cohen_d <- effectsize::cohens_d(MeanDuration ~ ItemType, data = participant_item_duration, ci = 0.95)
+
+# caption for search visits
+visit_caption_text <- sprintf("W = %.0f  *p* = %s  *d* = %.2f ~ [%.2f, %.2f]",
+  visit_wilcox$statistic, format_p(visit_wilcox$p.value),
+  visit_cohen_d$Cohens_d, visit_cohen_d$CI_low, visit_cohen_d$CI_high)
+
+
+# chart colors
+group_colors <- c(
+  search_used = "#ff7f0e",
+  search_no_use = "#ffbb78",
+  no_search = "#1f77b4"
+)
+# second colors for other plot
+group_colors_search <- c("Search Item" = "#ff7f0e", "Non-Search Item" = "#ffbb78")
+
+# plot items explored
+items_plot <- ggplot(participant_items, aes(x = ItemsExplored, y = SearchGroup, fill = SearchGroup, color = SearchGroup)) +
+  stat_summary(fun = mean, fun.data = mean_cl_boot, geom = "pointrange", size = 1.2, fatten = 3) +
+  geom_text(data = summary_stats,
+            aes(x = mean, y = SearchGroup, label = sprintf("%.2f~[%.2f,%.2f]", mean, lower, upper)),
+            inherit.aes = FALSE, vjust = -1, size = 2) +
+  scale_fill_manual(values = group_colors, guide = "none") +
+  scale_color_manual(values = group_colors, guide = "none") +
+  coord_cartesian(xlim = c(0, 35))+
+  labs(title = "Items Explored", x = NULL, y = NULL) +
+  theme_minimal(base_size = 13)
+
+# lay out items explored
+items_block <- items_plot / (ggplot() + theme_void()) + plot_layout(heights = c(4, 1))
+
+# make duration plot
+duration_plot <- ggplot(participant_duration, aes(x = TotalDuration, y = SearchGroup, fill = SearchGroup, color = SearchGroup)) +
+  stat_summary(fun = mean, fun.data = mean_cl_boot, geom = "pointrange", size = 1.2, fatten = 3) +
+  geom_text(data = duration_summary,
+            aes(x = mean, y = SearchGroup, label = sprintf("%.2f~[%.2f,%.2f]", mean, lower, upper)),
+            inherit.aes = FALSE, vjust = -1, size = 2) +
+  scale_fill_manual(values = group_colors, guide = "none") +
+  scale_color_manual(values = group_colors, guide = "none") +
+  coord_cartesian(xlim = c(0, 125))+
+  labs(title = "Total Duration (sec)", x = NULL, y = NULL) +
+  theme_minimal(base_size = 13)
+
+# duration caption
+duration_caption <- ggtext::geom_richtext(
+  data = data.frame(x = 0.5, y = 1),
+  aes(x, y, label = duration_caption_text),
+  size = 2, hjust = 0.5, vjust = 0, fill = NA, label.color = NA
+)
+
+# make duration for patchwork
+duration_block <- duration_plot / (ggplot() + theme_void()) + plot_layout(heights = c(4, 1))
+
+# visit plot
+visit_plot <- ggplot(participant_item_duration, aes(x = MeanDuration, y = ItemType, fill = ItemType, color = ItemType)) +
+  stat_summary(fun = mean, fun.data = mean_cl_boot, geom = "pointrange", size = 1.2, fatten = 3) +
+  geom_text(data = visit_summary,
+            aes(x = mean, y = ItemType, label = sprintf("%.2f~[%.2f,%.2f]", mean, lower, upper)),
+            inherit.aes = FALSE, vjust = -1, size = 2) +
+  scale_fill_manual(values = group_colors_search, guide = "none") +
+  scale_color_manual(values = group_colors_search, guide = "none") +
+  coord_cartesian(xlim = c(0, 12.5))+
+  labs(title = "Avg. Time per Item (Search Used)", x = NULL, y = NULL) +
+  theme_minimal(base_size = 13)
+
+# visit caption
+visit_caption <- ggtext::geom_richtext(
+  data = data.frame(x = 0.5, y = 1),
+  aes(x, y, label = visit_caption_text),
+  size = 2, hjust = 0.5, vjust = 0, fill = NA, label.color = NA
+)
+
+# for patchwork
+visit_block <- visit_plot / (ggplot() + visit_caption + theme_void()) + plot_layout(heights = c(4, 1))
+
+# nothing in bottom right
+annotation_placeholder <- ggplot() + theme_void()
+
+# rows
+top_row <- items_block | duration_block
+bottom_row <- visit_block | annotation_placeholder
+
+# full plot
+full_plot <- (top_row) / (bottom_row) +
+  plot_annotation(title = "Bubble (Colleges)") &
+  theme(plot.title = element_text(size = 14, hjust = 0.5))
+
+save_bdf_plot <- function(p, basename = "bubble_summary", width = 8, height = 6, dpi = 300) {
+  ggsave(paste0(basename, ".png"), plot = p, width = width, height = height, dpi = dpi, units = "in")
+  ggsave(paste0(basename, ".svg"), plot = p, width = width, height = height, dpi = dpi, units = "in")
+}
+
+save_bdf_plot(full_plot)
+
+```
+
+## 255 Charts
+
+```{r}
+# Load the data
+nytdf <- read.csv("255-replication.csv", header = TRUE)
+
+# remove interactions below 500ms
+nytdf <- nytdf %>%
+  filter(Duration > 500)
+
+# mark who used search
+search_usage <- nytdf %>%
+  filter(SearchValue != -1) %>%
+  distinct(ProlificId) %>%
+  mutate(UsedSearch = TRUE)
+
+# add search names
+nytdf <- nytdf %>%
+  left_join(search_usage, by = "ProlificId") %>%
+  mutate(
+    DurationSec = Duration / 1000,
+    UsedSearch = if_else(is.na(UsedSearch), FALSE, TRUE),
+    SearchGroup = case_when(
+      grepl("ChartControl", Condition) ~ "no_search",
+      grepl("ChartSearch", Condition) & UsedSearch == FALSE ~ "search_no_use",
+      grepl("ChartSearch", Condition) & UsedSearch == TRUE ~ "search_used"
+    ) %>% factor(levels = c("no_search", "search_no_use", "search_used")),
+    ActiveSearch = if_else(SearchValue != -1, "Active", "Inactive"),
+    PartOfSearch = ActiveSearch == "Active"
+  )
+
+# items explored
+participant_items <- nytdf %>%
+  distinct(ProlificId, SearchGroup, chartCode) %>%
+  count(ProlificId, SearchGroup, name = "ItemsExplored")
+
+# stats table
+summary_stats <- participant_items %>%
+  group_by(SearchGroup) %>%
+  do(as.data.frame(ggplot2::mean_cl_boot(.$ItemsExplored))) %>%
+  rename(mean = y, lower = ymin, upper = ymax)
+
+# participant duration
+participant_duration <- nytdf %>%
+  group_by(ProlificId, SearchGroup) %>%
+  summarise(TotalDuration = sum(DurationSec), .groups = "drop")
+
+duration_summary <- participant_duration %>%
+  group_by(SearchGroup) %>%
+  do(as.data.frame(ggplot2::mean_cl_boot(.$TotalDuration))) %>%
+  rename(mean = y, lower = ymin, upper = ymax)
+
+# time within search
+search_data <- nytdf %>% filter(SearchGroup == "search_used")
+
+participant_item_duration <- search_data %>%
+  group_by(ProlificId, PartOfSearch) %>%
+  summarise(MeanDuration = mean(DurationSec, na.rm = TRUE), .groups = "drop") %>%
+  mutate(ItemType = factor(PartOfSearch, levels = c(TRUE, FALSE),
+                           labels = c("Search Item", "Non-Search Item")))
+
+visit_summary <- participant_item_duration %>%
+  group_by(ItemType) %>%
+  do(as.data.frame(ggplot2::mean_cl_boot(.$MeanDuration))) %>%
+  rename(mean = y, lower = ymin, upper = ymax)
+
+visit_wilcox <- wilcox.test(MeanDuration ~ ItemType, data = participant_item_duration)
+visit_cohen_d <- effectsize::cohens_d(MeanDuration ~ ItemType, data = participant_item_duration, ci = 0.95)
+
+visit_caption_text <- sprintf("W = %.0f  *p* = %s  *d* = %.2f ~ [%.2f, %.2f]",
+  visit_wilcox$statistic, format_p(visit_wilcox$p.value),
+  visit_cohen_d$Cohens_d, visit_cohen_d$CI_low, visit_cohen_d$CI_high)
+
+# plots
+group_colors <- c(
+  search_used = "#ff7f0e",
+  search_no_use = "#ffbb78",
+  no_search = "#1f77b4"
+)
+# colors for second plot
+group_colors_search <- c("Search Item" = "#ff7f0e", "Non-Search Item" = "#ffbb78")
+
+# plot items
+items_plot <- ggplot(participant_items, aes(x = ItemsExplored, y = SearchGroup, fill = SearchGroup, color = SearchGroup)) +
+  stat_summary(fun = mean, fun.data = mean_cl_boot, geom = "pointrange", size = 1.2, fatten = 3) +
+  geom_text(data = summary_stats,
+            aes(x = mean, y = SearchGroup, label = sprintf("%.2f~[%.2f,%.2f]", mean, lower, upper)),
+            inherit.aes = FALSE, vjust = -1, size = 2) +
+  scale_fill_manual(values = group_colors, guide = "none") +
+  scale_color_manual(values = group_colors, guide = "none") +
+  labs(title = "Items Explored", x = NULL, y = NULL) +
+  coord_cartesian(xlim = c(0, 35))+
+  theme_minimal(base_size = 13)
+
+item_caption <- ggtext::geom_richtext(data = data.frame(x = 0.5, y = 1),
+  aes(x, y, label = item_caption_text), size = 2, hjust = 0.5, vjust = 0, fill = NA, label.color = NA)
+
+items_block <- items_plot / (ggplot() + theme_void()) + plot_layout(heights = c(4, 1))
+
+# plot duration
+duration_plot <- ggplot(participant_duration, aes(x = TotalDuration, y = SearchGroup, fill = SearchGroup, color = SearchGroup)) +
+  stat_summary(fun = mean, fun.data = mean_cl_boot, geom = "pointrange", size = 1.2, fatten = 3) +
+  geom_text(data = duration_summary,
+            aes(x = mean, y = SearchGroup, label = sprintf("%.2f~[%.2f,%.2f]", mean, lower, upper)),
+            inherit.aes = FALSE, vjust = -1, size = 2) +
+  scale_fill_manual(values = group_colors, guide = "none") +
+  scale_color_manual(values = group_colors, guide = "none") +
+  labs(title = "Total Duration (sec)", x = NULL, y = NULL) +
+  coord_cartesian(xlim = c(0, 125))+
+  theme_minimal(base_size = 13)
+
+duration_caption <- ggtext::geom_richtext(data = data.frame(x = 0.5, y = 1),
+  aes(x, y, label = duration_caption_text), size = 2, hjust = 0.5, vjust = 0, fill = NA, label.color = NA)
+
+duration_block <- duration_plot / (ggplot() + theme_void()) + plot_layout(heights = c(4, 1))
+
+# plot visits
+visit_plot <- ggplot(participant_item_duration, aes(x = MeanDuration, y = ItemType, fill = ItemType, color = ItemType)) +
+  stat_summary(fun = mean, fun.data = mean_cl_boot, geom = "pointrange", size = 1.2, fatten = 3) +
+  geom_text(data = visit_summary,
+            aes(x = mean, y = ItemType, label = sprintf("%.2f~[%.2f,%.2f]", mean, lower, upper)),
+            inherit.aes = FALSE, vjust = -1, size = 2) +
+  scale_fill_manual(values = group_colors_search, guide = "none") +
+  scale_color_manual(values = group_colors_search, guide = "none") +
+  labs(title = "Avg. Time per Item (Search Used)", x = NULL, y = NULL) +
+  coord_cartesian(xlim = c(0, 12.5))+
+  theme_minimal(base_size = 13)
+
+visit_caption <- ggtext::geom_richtext(data = data.frame(x = 0.5, y = 1),
+  aes(x, y, label = visit_caption_text), size = 2, hjust = 0.5, vjust = 0, fill = NA, label.color = NA)
+
+visit_block <- visit_plot / (ggplot() + visit_caption + theme_void()) + plot_layout(heights = c(4, 1))
+
+# Empty slot
+annotation_placeholder <- ggplot() + theme_void()
+
+# patchwork
+top_row <- items_block | duration_block
+bottom_row <- visit_block | annotation_placeholder
+
+full_plot <- (top_row) / (bottom_row) +
+  plot_annotation(title = "255 Charts") &
+  theme(plot.title = element_text(size = 14, hjust = 0.5))
+
+# save
+save_nyt_plot <- function(p, basename = "255_summary", width = 8, height = 6, dpi = 300) {
+  ggsave(paste0(basename, ".png"), plot = p, width = width, height = height, dpi = dpi, units = "in")
+  ggsave(paste0(basename, ".svg"), plot = p, width = width, height = height, dpi = dpi, units = "in")
+}
+
+save_nyt_plot(full_plot)
+
+```
+```
+

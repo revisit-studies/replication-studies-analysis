@@ -1,0 +1,198 @@
+---
+title: "reVISit 2.0: Correlation JND Analysis"
+output: html_notebook
+---
+
+# Setup
+
+```{r setup}
+# Load libraries
+library(tidyverse)
+library(clipr)
+library(svglite)
+library(boot)
+library(effectsize)
+library(patchwork)
+```
+
+# Correlation JND Analysis
+
+```{r jnd}
+
+df <- read.csv("correlation_jnd.csv", header=TRUE)
+
+# how many attention checks they can miss (20% in our study)
+max_miss_rate <- 0.20  
+
+attention_check_summary <- df %>%
+  mutate(parameters_isAttentionCheck = as.logical(parameters_isAttentionCheck), 
+         answer = as.logical(answer)) %>% 
+  filter(parameters_isAttentionCheck) %>% 
+  group_by(participantId) %>%  
+  summarise(
+    num_attention_checks = n(),  # Count total attention checks
+    num_correct_attention_checks = sum(as.integer(answer), na.rm = TRUE),  # Count correct responses
+    .groups = "drop"
+  ) %>%
+  mutate(
+    missed_attention_percent = if_else(
+      num_attention_checks > 0,
+      1 - (num_correct_attention_checks / num_attention_checks),  
+      0  
+    )
+  )
+
+# participant count before exclusion
+total_participants_before <- n_distinct(attention_check_summary$participantId)
+
+# excluded participants
+excluded_participants <- attention_check_summary %>%
+  filter(missed_attention_percent > max_miss_rate) %>%
+  select(participantId, missed_attention_percent)
+
+# cleanup
+# lots of renaming, etc for convenience
+nested_df <- df %>%
+  rename(base_correlation = parameters_r1) %>%
+  filter(trialId %in% c("trial")) %>%
+  filter(parameters_correlationDirection %in% c("negative", "positive")) %>%
+  filter(parameters_condition %in% c("hexbin", "scatter", "heatmap", "pcp")) %>%
+  mutate(parameters_counter = as.numeric(parameters_counter)) %>% 
+  mutate(parameters_r2 = as.numeric(parameters_r2)) %>% 
+  mutate(base_correlation = as.numeric(base_correlation)) %>% 
+  mutate(parameters_isAttentionCheck = as.logical(parameters_isAttentionCheck)) %>% 
+  mutate(answer = as.logical(answer)) %>% 
+  filter(base_correlation %in% c(0.3, 0.6, 0.9)) %>%
+  mutate(rdiff = base_correlation - parameters_r2) %>%
+  mutate(direction = if_else(base_correlation < parameters_r2, "above", "below")) %>%
+  # jnd calculation below
+  group_by(participantId, parameters_condition, parameters_correlationDirection, base_correlation, direction) %>% 
+  arrange(desc(parameters_counter)) %>% # sort trials
+  mutate(max_count = max(parameters_counter, na.rm = TRUE)) %>%
+  mutate(jnd = abs(mean(rdiff[2:25], na.rm = TRUE))) %>% # avg trials
+  summarise(
+    max_count = first(max_count),
+    jnd = first(jnd),
+    .groups = "drop"
+  ) %>%
+  mutate(adj_jnd = if_else(direction == "above", # adjustment
+                           base_correlation + 0.5 * jnd,
+                           base_correlation - 0.5 * jnd)) %>% 
+  # tweaks for plotting
+  mutate(
+    plot_base_correlation = if_else(
+      parameters_correlationDirection == "negative", -base_correlation,
+      base_correlation
+    ),
+    plot_jnd = if_else(parameters_correlationDirection == "negative", -jnd, jnd)
+  )
+
+# join dfs and filter by attention check threshold
+final_df <- nested_df %>%
+  left_join(attention_check_summary, by = "participantId") %>%
+  replace_na(list(num_attention_checks = 0, num_correct_attention_checks = 0, missed_attention_percent = 0)) %>% 
+  filter(missed_attention_percent <= max_miss_rate) 
+
+
+# count exclusion and print
+total_participants_after <- n_distinct(final_df$participantId)
+summary_exclusion <- list(
+  excluded_participants = excluded_participants,
+  total_before = total_participants_before,
+  total_after = total_participants_after
+)
+summary_exclusion
+
+```
+
+
+## Normal CIs
+
+
+```{r}
+
+# store conditions for printed charts
+n_conditions <- nested_df %>% 
+  distinct(parameters_condition) %>% 
+  nrow()
+
+# file name for "today"
+file_name <- paste0("results", format(Sys.Date(), "%b%d"))
+
+# split data for each correlation direction
+df_negative <- final_df %>% filter(parameters_correlationDirection == "negative")
+df_positive <- final_df %>% filter(parameters_correlationDirection == "positive")
+
+# mean and 95% CI for each condition / correlation
+df_negative_summary <- df_negative %>%
+  group_by(base_correlation, direction, parameters_condition) %>%
+  summarise(mean_jnd = mean(jnd),
+            lower_CI = mean_cl_normal(jnd)$ymin,
+            upper_CI = mean_cl_normal(jnd)$ymax,
+            .groups = "drop")
+
+# save summary for reporting
+write.csv(df_negative_summary, "df_negative_summary.csv", row.names = FALSE)
+
+# mean and 95% CI for each condition / correlation
+df_positive_summary <- df_positive %>%
+  group_by(base_correlation, direction, parameters_condition) %>%
+  summarise(mean_jnd = mean(jnd),
+            lower_CI = mean_cl_normal(jnd)$ymin,
+            upper_CI = mean_cl_normal(jnd)$ymax,
+            .groups = "drop")
+
+# save summary for reporting
+write.csv(df_positive_summary, "df_positive_summary.csv", row.names = FALSE)
+
+
+# plot for positive correlation
+plot_positive <- ggplot(df_positive, aes(x = base_correlation, y = jnd, color = direction)) +
+  geom_point(aes(x = base_correlation + if_else(direction == "above", 0.03, -0.03)),
+             alpha = 0.4, size = 2) +
+  stat_summary(aes(x = base_correlation + if_else(direction == "above", 0.07, -0.07), shape = direction),
+               fun.data = mean_cl_normal, geom = "errorbar", width = 0) +
+  stat_summary(aes(x = base_correlation + if_else(direction == "above", 0.07, -0.07), shape = direction),
+               fun.data = mean_cl_normal, geom = "point", size = 2) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 0.6)) +  
+  scale_color_manual(values = c("above" = "#E41A1C", "below" = "#377EB8")) +
+  scale_shape_manual(values = c("above" = 18, "below" = 18)) +  
+  labs(x = "Base Correlation (r)", y = "JND", color = "Approach", shape = "Approach",
+       title = "positive Correlation") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  facet_grid(parameters_condition ~ .) 
+
+
+# plot for negative correlation
+plot_negative <- ggplot(df_negative, aes(x = -base_correlation, y = jnd, color = direction)) +
+  geom_point(aes(x = -base_correlation + if_else(direction == "above", -0.03, +0.03)),
+             alpha = 0.4, size = 2) +
+  stat_summary(aes(x = -base_correlation + if_else(direction == "above", -0.07, +0.07)),
+               fun.data = mean_cl_normal, geom = "errorbar", width = 0) +
+  stat_summary(aes(x = -base_correlation + if_else(direction == "above", -0.07, +0.07), 
+                   shape = direction),
+               fun.data = mean_cl_normal, geom = "point", size = 2) +
+  coord_cartesian(xlim = c(-1, 0), ylim = c(0, 0.6)) + 
+  scale_color_manual(values = c("above" = "#E41A1C", "below" = "#377EB8")) +
+  scale_shape_manual(values = c("above" = 18, "below" = 18)) + 
+  labs(x = "Base Correlation (r)", y = "JND", color = "Approach", shape = "Approach",
+       title = "negative Correlation") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  facet_grid(parameters_condition ~ .)
+
+# patchwork combine plots
+combined_plot <- plot_negative + plot_positive
+
+combined_plot
+
+# save svg
+ggsave(filename = paste0(file_name,".svg"), 
+       plot = combined_plot, 
+       width = 8, 
+       height = 2 * n_conditions, 
+       device = "svg")
+
+```
+
